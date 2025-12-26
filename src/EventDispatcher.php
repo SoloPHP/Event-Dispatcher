@@ -6,7 +6,7 @@ namespace Solo\EventDispatcher;
 
 use Psr\EventDispatcher\{EventDispatcherInterface, ListenerProviderInterface, StoppableEventInterface};
 
-class EventDispatcher implements EventDispatcherInterface
+final class EventDispatcher implements EventDispatcherInterface
 {
     public function __construct(private readonly ListenerProviderInterface $listenerProvider)
     {
@@ -14,12 +14,14 @@ class EventDispatcher implements EventDispatcherInterface
 
     public function dispatch(object $event): object
     {
-        foreach ($this->listenerProvider->getListenersForEvent($event) as $listener) {
-            $listener($event);
+        $isStoppable = $event instanceof StoppableEventInterface;
 
-            if ($event instanceof StoppableEventInterface && $event->isPropagationStopped()) {
+        foreach ($this->listenerProvider->getListenersForEvent($event) as $listener) {
+            if ($isStoppable && $event->isPropagationStopped()) {
                 break;
             }
+
+            $listener($event);
         }
 
         return $event;

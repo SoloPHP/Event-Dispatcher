@@ -31,7 +31,7 @@ final class EventDispatcherTest extends TestCase
         $provider = new ListenerProvider();
         $provider->addListener(StoppableTestEvent::class, function (StoppableTestEvent $e) use (&$order): void {
             $order[] = 1;
-            $e->stop();
+            $e->stopPropagation();
         }, 10);
         $provider->addListener(StoppableTestEvent::class, function (StoppableTestEvent $e) use (&$order): void {
             $order[] = 2;
@@ -41,5 +41,34 @@ final class EventDispatcherTest extends TestCase
         $dispatcher->dispatch(new StoppableTestEvent());
 
         self::assertSame([1], $order);
+    }
+
+    public function testPreStoppedEventSkipsAllListeners(): void
+    {
+        $called = false;
+
+        $provider = new ListenerProvider();
+        $provider->addListener(StoppableTestEvent::class, function () use (&$called): void {
+            $called = true;
+        });
+
+        $event = new StoppableTestEvent();
+        $event->stopPropagation();
+
+        $dispatcher = new EventDispatcher($provider);
+        $dispatcher->dispatch($event);
+
+        self::assertFalse($called);
+    }
+
+    public function testDispatchReturnsEvent(): void
+    {
+        $provider = new ListenerProvider();
+        $dispatcher = new EventDispatcher($provider);
+
+        $event = new TestEvent('test');
+        $result = $dispatcher->dispatch($event);
+
+        self::assertSame($event, $result);
     }
 }

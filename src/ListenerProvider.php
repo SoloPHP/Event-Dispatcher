@@ -5,16 +5,16 @@ declare(strict_types=1);
 namespace Solo\EventDispatcher;
 
 use Psr\EventDispatcher\ListenerProviderInterface;
+use Solo\EventDispatcher\Internal\ListenerConfigParser;
 
-use function array_merge;
-use function class_implements;
-use function class_parents;
-
-class ListenerProvider implements ListenerProviderInterface
+final class ListenerProvider implements ListenerProviderInterface
 {
-    /** @var array<string, array<int, list<callable>>> */
+    /** @var array<class-string, array<int, list<callable>>> */
     private array $listenersByEvent = [];
 
+    /**
+     * @param class-string $eventClass
+     */
     public function addListener(string $eventClass, callable $listener, int $priority = 0): void
     {
         $this->listenersByEvent[$eventClass][$priority][] = $listener;
@@ -25,38 +25,43 @@ class ListenerProvider implements ListenerProviderInterface
         $subscriptions = $subscriber::getSubscribedEvents();
 
         foreach ($subscriptions as $eventClass => $config) {
-            if (is_string($config)) {
-                $this->addListener($eventClass, [$subscriber, $config]);
-                continue;
-            }
+            $parsed = ListenerConfigParser::parseSubscriberConfig($eventClass, $config);
 
-            // Single [method, priority]
-            if (
-                is_array($config)
-                && isset($config[0])
-                && is_string($config[0])
-                && (isset($config[1]) ? is_int($config[1]) : true)
-            ) {
-                $method = $config[0];
-                $priority = (int)($config[1] ?? 0);
-                $this->addListener($eventClass, [$subscriber, $method], $priority);
-                continue;
-            }
-
-            // Multiple [[method, priority], ...]
-            if (is_array($config)) {
-                foreach ($config as $entry) {
-                    if (!is_array($entry) || !isset($entry[0]) || !is_string($entry[0])) {
-                        continue;
-                    }
-                    $method = $entry[0];
-                    $priority = (int)($entry[1] ?? 0);
-                    $this->addListener($eventClass, [$subscriber, $method], $priority);
-                }
+            foreach ($parsed as $item) {
+                $this->addListener(
+                    $eventClass,
+                    $subscriber->{$item['method']}(...),
+                    $item['priority']
+                );
             }
         }
     }
 
+    /**
+     * Check if there are any listeners registered for a specific event class.
+     * Considers listeners for parent classes and interfaces.
+     *
+     * @param class-string $eventClass
+     */
+    public function hasListenersFor(string $eventClass): bool
+    {
+        $classes = [$eventClass];
+        $parents = class_parents($eventClass) ?: [];
+        $interfaces = class_implements($eventClass) ?: [];
+        $classes = array_merge($classes, array_values($parents), array_values($interfaces));
+
+        foreach ($classes as $class) {
+            if (isset($this->listenersByEvent[$class]) && $this->listenersByEvent[$class] !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return iterable<callable>
+     */
     public function getListenersForEvent(object $event): iterable
     {
         $eventClass = $event::class;
@@ -82,16 +87,8 @@ class ListenerProvider implements ListenerProviderInterface
             return [];
         }
 
-        // Sort priorities descending
         krsort($collected);
 
-        $ordered = [];
-        foreach ($collected as $listeners) {
-            foreach ($listeners as $listener) {
-                $ordered[] = $listener;
-            }
-        }
-
-        return $ordered;
+        return array_merge(...$collected);
     }
 }
