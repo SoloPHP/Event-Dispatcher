@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Solo\EventDispatcher;
 
+use Psr\Log\LoggerInterface;
 use Solo\EventDispatcher\Exception\InvalidConfigurationException;
 use Solo\EventDispatcher\Internal\ListenerConfigParser;
 
@@ -51,11 +52,14 @@ final class EventDispatcherFactory
      *
      * @throws InvalidConfigurationException
      */
-    public static function create(array $listeners = [], array $subscribers = []): EventDispatcher
-    {
+    public static function create(
+        array $listeners = [],
+        array $subscribers = [],
+        ?LoggerInterface $logger = null
+    ): EventDispatcher {
         $provider = self::createProvider($listeners, $subscribers);
 
-        return new EventDispatcher($provider);
+        return new EventDispatcher($provider, $logger);
     }
 
     /**

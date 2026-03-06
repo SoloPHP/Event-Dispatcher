@@ -5,7 +5,7 @@
 [![PHP Version](https://img.shields.io/packagist/php-v/solophp/event-dispatcher.svg)](https://packagist.org/packages/solophp/event-dispatcher)
 [![Code Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)]()
 
-Minimal, PSR-14 compatible event dispatcher with priorities and stoppable propagation.
+Minimal, PSR-14 compatible event dispatcher with priorities, stoppable propagation, and optional error logging.
 
 ## Requirements
 
@@ -89,6 +89,35 @@ $dispatcher = EventDispatcherFactory::create(
     ],
 );
 ```
+
+### Error Logging
+
+By default, if a listener throws an exception, it bubbles up to the caller. Pass a PSR-3 `LoggerInterface` to catch errors, log them, and continue executing the remaining listeners:
+
+```php
+use Solo\EventDispatcher\{EventDispatcher, ListenerProvider};
+use Psr\Log\LoggerInterface;
+
+$dispatcher = new EventDispatcher($provider, $logger);
+
+// or via factory
+$dispatcher = EventDispatcherFactory::create(
+    listeners: [...],
+    subscribers: [...],
+    logger: $logger,
+);
+```
+
+When a listener fails, the following context is logged at `error` level:
+
+| Key          | Description                          |
+|--------------|--------------------------------------|
+| `exception`  | Exception class name                 |
+| `message`    | Exception message                    |
+| `event`      | Event class name                     |
+| `listener`   | Listener description (e.g. `Closure`, `MyClass::onEvent`) |
+| `file`       | File where the exception was thrown   |
+| `line`       | Line number                          |
 
 ### Stoppable Events
 
