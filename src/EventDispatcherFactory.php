@@ -31,10 +31,8 @@ final class EventDispatcherFactory
         $provider = new ListenerProvider();
 
         foreach ($listeners as $eventClass => $config) {
-            $parsed = ListenerConfigParser::parseListenerConfig($eventClass, $config);
-
-            foreach ($parsed as $item) {
-                $provider->addListener($eventClass, $item['callable'], $item['priority']);
+            foreach (ListenerConfigParser::parseListenerConfig($eventClass, $config) as $item) {
+                $provider->addListener($eventClass, $item['target'], $item['priority']);
             }
         }
 

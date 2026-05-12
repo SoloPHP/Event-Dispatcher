@@ -67,9 +67,9 @@ $dispatcher->dispatch(new UserRegistered('john'));
 
 ```php
 return [
-    EventClass::class => 'methodName',
-    EventClass::class => ['methodName', 10],                         // with priority
-    EventClass::class => [['firstMethod', 20], ['secondMethod', 0]], // multiple handlers
+    UserRegistered::class => 'onUserRegistered',                            // method name (priority 0)
+    OrderPlaced::class    => ['onOrderPlaced', 10],                         // method with priority
+    OrderShipped::class   => [['logShipment', 20], ['notifyCustomer', 0]],  // multiple handlers
 ];
 ```
 

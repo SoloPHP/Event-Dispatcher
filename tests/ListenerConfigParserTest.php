@@ -14,21 +14,21 @@ final class ListenerConfigParserTest extends TestCase
     {
         $result = ListenerConfigParser::parseSubscriberConfig('Event', 'onEvent');
 
-        self::assertSame([['method' => 'onEvent', 'priority' => 0]], $result);
+        self::assertSame([['target' => 'onEvent', 'priority' => 0]], $result);
     }
 
     public function testParseSubscriberConfigWithMethodAndPriority(): void
     {
         $result = ListenerConfigParser::parseSubscriberConfig('Event', ['onEvent', 10]);
 
-        self::assertSame([['method' => 'onEvent', 'priority' => 10]], $result);
+        self::assertSame([['target' => 'onEvent', 'priority' => 10]], $result);
     }
 
     public function testParseSubscriberConfigWithMethodOnly(): void
     {
         $result = ListenerConfigParser::parseSubscriberConfig('Event', ['onEvent']);
 
-        self::assertSame([['method' => 'onEvent', 'priority' => 0]], $result);
+        self::assertSame([['target' => 'onEvent', 'priority' => 0]], $result);
     }
 
     public function testParseSubscriberConfigWithMultipleMethods(): void
@@ -39,8 +39,8 @@ final class ListenerConfigParserTest extends TestCase
         ]);
 
         self::assertSame([
-            ['method' => 'first', 'priority' => 10],
-            ['method' => 'second', 'priority' => 5],
+            ['target' => 'first', 'priority' => 10],
+            ['target' => 'second', 'priority' => 5],
         ], $result);
     }
 
@@ -88,7 +88,7 @@ final class ListenerConfigParserTest extends TestCase
         $result = ListenerConfigParser::parseListenerConfig('Event', $callable);
 
         self::assertCount(1, $result);
-        self::assertSame($callable, $result[0]['callable']);
+        self::assertSame($callable, $result[0]['target']);
         self::assertSame(0, $result[0]['priority']);
     }
 
@@ -98,7 +98,7 @@ final class ListenerConfigParserTest extends TestCase
         $result = ListenerConfigParser::parseListenerConfig('Event', [$callable, 10]);
 
         self::assertCount(1, $result);
-        self::assertSame($callable, $result[0]['callable']);
+        self::assertSame($callable, $result[0]['target']);
         self::assertSame(10, $result[0]['priority']);
     }
 
@@ -113,9 +113,9 @@ final class ListenerConfigParserTest extends TestCase
         ]);
 
         self::assertCount(2, $result);
-        self::assertSame($callable1, $result[0]['callable']);
+        self::assertSame($callable1, $result[0]['target']);
         self::assertSame(10, $result[0]['priority']);
-        self::assertSame($callable2, $result[1]['callable']);
+        self::assertSame($callable2, $result[1]['target']);
         self::assertSame(5, $result[1]['priority']);
     }
 

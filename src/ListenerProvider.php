@@ -12,51 +12,39 @@ final class ListenerProvider implements ListenerProviderInterface
     /** @var array<class-string, array<int, list<callable>>> */
     private array $listenersByEvent = [];
 
+    /** @var array<class-string, list<callable>> */
+    private array $resolved = [];
+
     /**
      * @param class-string $eventClass
      */
     public function addListener(string $eventClass, callable $listener, int $priority = 0): void
     {
         $this->listenersByEvent[$eventClass][$priority][] = $listener;
+        $this->resolved = [];
     }
 
     public function addSubscriber(EventSubscriberInterface $subscriber): void
     {
-        $subscriptions = $subscriber::getSubscribedEvents();
-
-        foreach ($subscriptions as $eventClass => $config) {
-            $parsed = ListenerConfigParser::parseSubscriberConfig($eventClass, $config);
-
-            foreach ($parsed as $item) {
+        foreach ($subscriber::getSubscribedEvents() as $eventClass => $config) {
+            foreach (ListenerConfigParser::parseSubscriberConfig($eventClass, $config) as $item) {
                 $this->addListener(
                     $eventClass,
-                    $subscriber->{$item['method']}(...),
-                    $item['priority']
+                    $subscriber->{$item['target']}(...),
+                    $item['priority'],
                 );
             }
         }
     }
 
     /**
-     * Check if there are any listeners registered for a specific event class.
-     * Considers listeners for parent classes and interfaces.
+     * Considers listeners registered for parent classes and implemented interfaces.
      *
      * @param class-string $eventClass
      */
     public function hasListenersFor(string $eventClass): bool
     {
-        $classes = [$eventClass];
-        $parents = class_parents($eventClass) ?: [];
-        $interfaces = class_implements($eventClass) ?: [];
-        $classes = array_merge($classes, array_values($parents), array_values($interfaces));
-
-        foreach ($classes as $class) {
-            if (isset($this->listenersByEvent[$class]) && $this->listenersByEvent[$class] !== []) {
-                return true;
-            }
-        }
-
-        return false;
+        return $this->resolve($eventClass) !== [];
     }
 
     /**
@@ -64,15 +52,24 @@ final class ListenerProvider implements ListenerProviderInterface
      */
     public function getListenersForEvent(object $event): iterable
     {
-        $eventClass = $event::class;
+        return $this->resolve($event::class);
+    }
 
-        $classes = [$eventClass];
-        $parents = class_parents($event) ?: [];
-        $interfaces = class_implements($event) ?: [];
-        $classes = array_merge($classes, array_values($parents), array_values($interfaces));
+    /**
+     * @param class-string $eventClass
+     * @return list<callable>
+     */
+    private function resolve(string $eventClass): array
+    {
+        if (isset($this->resolved[$eventClass])) {
+            return $this->resolved[$eventClass];
+        }
+
+        $parents = class_parents($eventClass) ?: [];
+        $interfaces = class_implements($eventClass) ?: [];
 
         $collected = [];
-        foreach ($classes as $class) {
+        foreach ([$eventClass, ...$parents, ...$interfaces] as $class) {
             if (!isset($this->listenersByEvent[$class])) {
                 continue;
             }
@@ -84,11 +81,10 @@ final class ListenerProvider implements ListenerProviderInterface
         }
 
         if ($collected === []) {
-            return [];
+            return $this->resolved[$eventClass] = [];
         }
 
         krsort($collected);
-
-        return array_merge(...$collected);
+        return $this->resolved[$eventClass] = array_merge(...$collected);
     }
 }
