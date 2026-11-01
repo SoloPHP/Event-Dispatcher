@@ -2,23 +2,18 @@
 
 declare(strict_types=1);
 
-namespace Tests;
+namespace Solo\EventDispatcher\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Tests\Fixture\StoppableTestEvent;
+use Solo\EventDispatcher\Tests\Fixtures\StoppableEvent;
 
 final class AbstractStoppableEventTest extends TestCase
 {
-    public function testIsPropagationStoppedReturnsFalseByDefault(): void
+    public function testPropagationStopsOnlyWhenRequested(): void
     {
-        $event = new StoppableTestEvent();
-
+        $event = new StoppableEvent();
         self::assertFalse($event->isPropagationStopped());
-    }
 
-    public function testStopPropagationStopsEvent(): void
-    {
-        $event = new StoppableTestEvent();
         $event->stopPropagation();
 
         self::assertTrue($event->isPropagationStopped());

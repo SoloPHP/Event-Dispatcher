@@ -2,180 +2,297 @@
 
 declare(strict_types=1);
 
-namespace Tests;
+namespace Solo\EventDispatcher\Tests;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Solo\EventDispatcher\EventDispatcher;
+use Solo\EventDispatcher\Exception\InvalidConfigurationException;
 use Solo\EventDispatcher\ListenerProvider;
-use Tests\Fixture\ChildEvent;
-use Tests\Fixture\EmptySubscriber;
-use Tests\Fixture\EventInterface;
-use Tests\Fixture\InterfaceEvent;
-use Tests\Fixture\ParentEvent;
-use Tests\Fixture\TestEvent;
-use Tests\Fixture\TestSubscriber;
+use Solo\EventDispatcher\Tests\Fixtures\ChildEvent;
+use Solo\EventDispatcher\Tests\Fixtures\EventTrait;
+use Solo\EventDispatcher\Tests\Fixtures\ExtendedMarkerInterface;
+use Solo\EventDispatcher\Tests\Fixtures\MarkerInterface;
+use Solo\EventDispatcher\Tests\Fixtures\ParentEvent;
+use Solo\EventDispatcher\Tests\Fixtures\RecordingSubscriber;
+use Solo\EventDispatcher\Tests\Fixtures\TestEvent;
 
 final class ListenerProviderTest extends TestCase
 {
-    public function testHasListenersForReturnsFalseWhenNoListeners(): void
+    protected function setUp(): void
+    {
+        RecordingSubscriber::$subscriptions = [];
+    }
+
+    public function testHasNoListenersForAnEventNobodyListensTo(): void
     {
         $provider = new ListenerProvider();
 
+        self::assertSame([], $provider->getListenersForEvent(new TestEvent()));
         self::assertFalse($provider->hasListenersFor(TestEvent::class));
     }
 
-    public function testGetListenersForEventReturnsEmptyForUnknownEvent(): void
+    public function testOrdersListenersByDescendingPriority(): void
     {
         $provider = new ListenerProvider();
+        [$lowest, $low, $default, $high, $highest] = self::listeners(5);
+        $provider->addListener(TestEvent::class, $default);
+        $provider->addListener(TestEvent::class, $lowest, PHP_INT_MIN);
+        $provider->addListener(TestEvent::class, $highest, PHP_INT_MAX);
+        $provider->addListener(TestEvent::class, $low, -10);
+        $provider->addListener(TestEvent::class, $high, 10);
 
-        $listeners = $provider->getListenersForEvent(new TestEvent('test'));
-
-        self::assertSame([], $listeners);
+        self::assertSame(
+            [$highest, $high, $default, $low, $lowest],
+            $provider->getListenersForEvent(new TestEvent()),
+        );
     }
 
-    public function testListenersAreCalledInPriorityOrder(): void
+    public function testKeepsRegistrationOrderWithinAPriority(): void
     {
-        $order = [];
         $provider = new ListenerProvider();
+        [$first, $second, $third] = self::listeners(3);
+        $provider->addListener(TestEvent::class, $first);
+        $provider->addListener(TestEvent::class, $second);
+        $provider->addListener(TestEvent::class, $third);
 
-        $provider->addListener(TestEvent::class, function () use (&$order): void {
-            $order[] = 'low';
-        }, 0);
-
-        $provider->addListener(TestEvent::class, function () use (&$order): void {
-            $order[] = 'high';
-        }, 10);
-
-        $provider->addListener(TestEvent::class, function () use (&$order): void {
-            $order[] = 'medium';
-        }, 5);
-
-        foreach ($provider->getListenersForEvent(new TestEvent('test')) as $listener) {
-            $listener();
-        }
-
-        self::assertSame(['high', 'medium', 'low'], $order);
+        self::assertSame([$first, $second, $third], $provider->getListenersForEvent(new TestEvent()));
     }
 
-    public function testListenersWithSamePriorityPreserveInsertionOrder(): void
+    public function testIncludesListenersForParentClassesAndInterfacesOnce(): void
     {
-        $order = [];
         $provider = new ListenerProvider();
+        [$child, $parent, $marker, $extendedMarker] = self::listeners(4);
+        $provider->addListener(ChildEvent::class, $child, 4);
+        $provider->addListener(ParentEvent::class, $parent, 3);
+        $provider->addListener(MarkerInterface::class, $marker, 2);
+        $provider->addListener(ExtendedMarkerInterface::class, $extendedMarker, 1);
 
-        $provider->addListener(TestEvent::class, function () use (&$order): void {
-            $order[] = 'first';
-        }, 0);
-
-        $provider->addListener(TestEvent::class, function () use (&$order): void {
-            $order[] = 'second';
-        }, 0);
-
-        $provider->addListener(TestEvent::class, function () use (&$order): void {
-            $order[] = 'third';
-        }, 0);
-
-        foreach ($provider->getListenersForEvent(new TestEvent('test')) as $listener) {
-            $listener();
-        }
-
-        self::assertSame(['first', 'second', 'third'], $order);
+        self::assertSame(
+            [$child, $parent, $marker, $extendedMarker],
+            $provider->getListenersForEvent(new ChildEvent()),
+        );
+        self::assertSame([$parent, $marker], $provider->getListenersForEvent(new ParentEvent()));
     }
 
-    public function testAddSubscriberRegistersEventListeners(): void
+    public function testRegistrationOrderBreaksTiesAcrossEventTypes(): void
     {
-        $log = [];
         $provider = new ListenerProvider();
-        $provider->addSubscriber(new TestSubscriber(function (string $name) use (&$log): void {
-            $log[] = $name;
-        }));
+        [$parent, $child] = self::listeners(2);
+        $provider->addListener(ParentEvent::class, $parent);
+        $provider->addListener(ChildEvent::class, $child);
 
-        self::assertTrue($provider->hasListenersFor(TestEvent::class));
-
-        foreach ($provider->getListenersForEvent(new TestEvent('hello')) as $listener) {
-            $listener(new TestEvent('hello'));
-        }
-
-        self::assertSame(['hello'], $log);
+        self::assertSame([$parent, $child], $provider->getListenersForEvent(new ChildEvent()));
     }
 
-    public function testAddSubscriberWithEmptyEventsDoesNotRegisterListeners(): void
+    public function testMatchesAnAnonymousEventClassByItsInterfaces(): void
     {
         $provider = new ListenerProvider();
-        $provider->addSubscriber(new EmptySubscriber());
+        [$listener] = self::listeners(1);
+        $provider->addListener(MarkerInterface::class, $listener);
+        $event = new class implements ExtendedMarkerInterface {
+        };
 
-        self::assertFalse($provider->hasListenersFor(TestEvent::class));
+        self::assertSame([$listener], $provider->getListenersForEvent($event));
     }
 
-    public function testGetListenersForEventIncludesParentClassListeners(): void
-    {
-        $order = [];
-        $provider = new ListenerProvider();
-
-        $provider->addListener(ParentEvent::class, function () use (&$order): void {
-            $order[] = 'parent';
-        });
-
-        $provider->addListener(ChildEvent::class, function () use (&$order): void {
-            $order[] = 'child';
-        });
-
-        foreach ($provider->getListenersForEvent(new ChildEvent()) as $listener) {
-            $listener();
-        }
-
-        self::assertContains('parent', $order);
-        self::assertContains('child', $order);
-    }
-
-    public function testGetListenersForEventIncludesInterfaceListeners(): void
-    {
-        $order = [];
-        $provider = new ListenerProvider();
-
-        $provider->addListener(EventInterface::class, function () use (&$order): void {
-            $order[] = 'interface';
-        });
-
-        $provider->addListener(InterfaceEvent::class, function () use (&$order): void {
-            $order[] = 'concrete';
-        });
-
-        foreach ($provider->getListenersForEvent(new InterfaceEvent()) as $listener) {
-            $listener();
-        }
-
-        self::assertContains('interface', $order);
-        self::assertContains('concrete', $order);
-    }
-
-    public function testParentListenersOnlyCalledForChildEvents(): void
-    {
-        $called = false;
-        $provider = new ListenerProvider();
-
-        $provider->addListener(ChildEvent::class, function () use (&$called): void {
-            $called = true;
-        });
-
-        foreach ($provider->getListenersForEvent(new ParentEvent()) as $listener) {
-            $listener();
-        }
-
-        self::assertFalse($called);
-    }
-
-    public function testHasListenersForConsidersParentClassListeners(): void
+    public function testHasListenersForCountsParentsAndInterfaces(): void
     {
         $provider = new ListenerProvider();
-        $provider->addListener(ParentEvent::class, fn () => null);
+        $provider->addListener(MarkerInterface::class, static fn () => null);
 
         self::assertTrue($provider->hasListenersFor(ChildEvent::class));
+        self::assertTrue($provider->hasListenersFor(ExtendedMarkerInterface::class));
+        self::assertFalse($provider->hasListenersFor(TestEvent::class));
     }
 
-    public function testHasListenersForConsidersInterfaceListeners(): void
+    public function testNewListenersReachEventTypesResolvedBefore(): void
     {
         $provider = new ListenerProvider();
-        $provider->addListener(EventInterface::class, fn () => null);
+        [$first, $second] = self::listeners(2);
+        self::assertSame([], $provider->getListenersForEvent(new ChildEvent()));
 
-        self::assertTrue($provider->hasListenersFor(InterfaceEvent::class));
+        $provider->addListener(ParentEvent::class, $first);
+        self::assertSame([$first], $provider->getListenersForEvent(new ChildEvent()));
+
+        $provider->addListener(ChildEvent::class, $second, 1);
+        self::assertSame([$second, $first], $provider->getListenersForEvent(new ChildEvent()));
+    }
+
+    public function testAcceptsClassAliasesAndOtherSpellingsOfTheEventClass(): void
+    {
+        $alias = __NAMESPACE__ . '\\TestEventAlias';
+        if (!class_exists($alias, false)) {
+            class_alias(TestEvent::class, $alias);
+        }
+        $provider = new ListenerProvider();
+        [$byAlias, $byLowercaseName] = self::listeners(2);
+        $provider->addListener($alias, $byAlias); // @phpstan-ignore argument.type
+        $provider->addListener('\\' . strtolower(TestEvent::class), $byLowercaseName);
+
+        self::assertSame([$byAlias, $byLowercaseName], $provider->getListenersForEvent(new TestEvent()));
+        self::assertTrue($provider->hasListenersFor($alias)); // @phpstan-ignore argument.type
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function unknownEventTypes(): iterable
+    {
+        yield 'missing class' => ['Missing\\Event'];
+        yield 'empty name' => [''];
+        yield 'trait' => [EventTrait::class];
+    }
+
+    #[DataProvider('unknownEventTypes')]
+    public function testRejectsAListenerForAnUnknownEventType(string $eventClass): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage(sprintf('Event type "%s" must be an existing class or interface.', $eventClass));
+
+        (new ListenerProvider())->addListener($eventClass, static fn () => null); // @phpstan-ignore argument.type
+    }
+
+    #[DataProvider('unknownEventTypes')]
+    public function testHasListenersForRejectsAnUnknownEventType(string $eventClass): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+
+        (new ListenerProvider())->hasListenersFor($eventClass); // @phpstan-ignore argument.type
+    }
+
+    /** @return iterable<string, array{mixed, list<string>}> */
+    public static function subscriptions(): iterable
+    {
+        yield 'method name' => ['first', ['first']];
+        yield 'method in a list' => [['first'], ['first']];
+        yield 'method with a priority' => [['first', 10], ['first']];
+        yield 'methods by priority' => [[['first', -10], ['second', 10], ['third']], ['second', 'third', 'first']];
+        yield 'equal priorities in declaration order' => [[['third'], ['first']], ['third', 'first']];
+        yield 'no methods' => [[], []];
+    }
+
+    /** @param list<string> $expectedCalls */
+    #[DataProvider('subscriptions')]
+    public function testRegistersTheSubscribedMethods(mixed $subscription, array $expectedCalls): void
+    {
+        RecordingSubscriber::$subscriptions = [TestEvent::class => $subscription];
+        $subscriber = new RecordingSubscriber();
+        $provider = new ListenerProvider();
+        $provider->addSubscriber($subscriber);
+
+        (new EventDispatcher($provider))->dispatch(new TestEvent());
+
+        self::assertSame($expectedCalls, $subscriber->calls);
+    }
+
+    public function testSubscribesToSeveralEventTypesAlongsideOtherListeners(): void
+    {
+        RecordingSubscriber::$subscriptions = [
+            TestEvent::class => ['first', 10],
+            MarkerInterface::class => 'second',
+        ];
+        $subscriber = new RecordingSubscriber();
+        $provider = new ListenerProvider();
+        $provider->addListener(TestEvent::class, static function () use ($subscriber): void {
+            $subscriber->calls[] = 'closure';
+        }, 20);
+        $provider->addSubscriber($subscriber);
+        $dispatcher = new EventDispatcher($provider);
+
+        $dispatcher->dispatch(new TestEvent());
+        $dispatcher->dispatch(new ChildEvent());
+
+        self::assertSame(['closure', 'first', 'second'], $subscriber->calls);
+    }
+
+    /** @return iterable<string, array{mixed}> */
+    public static function malformedSubscriptions(): iterable
+    {
+        yield 'number' => [123];
+        yield 'null' => [null];
+        yield 'string priority' => [['first', '10']];
+        yield 'float priority' => [['first', 1.5]];
+        yield 'null priority' => [['first', null]];
+        yield 'extra element' => [['first', 10, 'extra']];
+        yield 'named keys' => [['method' => 'first']];
+        yield 'sparse pair' => [[0 => 'first', 2 => 10]];
+        yield 'named list' => [['handler' => ['first', 10]]];
+        yield 'empty pair' => [[[]]];
+        yield 'method that is not a string' => [[[123, 10]]];
+        yield 'bare method among pairs' => [[['first', 10], 'second']];
+    }
+
+    #[DataProvider('malformedSubscriptions')]
+    public function testRejectsAMalformedSubscriptionWithoutRegisteringAnything(mixed $subscription): void
+    {
+        self::assertSubscriberRejected(
+            [ParentEvent::class => 'first', TestEvent::class => $subscription],
+            sprintf(
+                'Invalid subscription to "%s" in %s::getSubscribedEvents()',
+                TestEvent::class,
+                RecordingSubscriber::class,
+            ),
+        );
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function unusableMethods(): iterable
+    {
+        yield 'private method' => ['hidden'];
+        yield 'missing method' => ['missing'];
+        yield 'empty name' => [''];
+    }
+
+    #[DataProvider('unusableMethods')]
+    public function testRejectsAMethodThatIsNotPublicWithoutRegisteringAnything(string $method): void
+    {
+        self::assertSubscriberRejected(
+            [ParentEvent::class => 'first', TestEvent::class => [['second'], [$method]]],
+            sprintf('%s::%s() for event "%s"', RecordingSubscriber::class, $method, TestEvent::class),
+        );
+    }
+
+    /** @return iterable<string, array{array<mixed>, string}> */
+    public static function subscriptionsToUnknownTypes(): iterable
+    {
+        yield 'missing class' => [['Missing\\Event' => 'first'], 'Missing\\Event'];
+        yield 'list instead of a map' => [['first'], '0'];
+    }
+
+    /** @param array<mixed> $subscriptions */
+    #[DataProvider('subscriptionsToUnknownTypes')]
+    public function testRejectsASubscriptionToAnUnknownEventType(array $subscriptions, string $eventClass): void
+    {
+        self::assertSubscriberRejected(
+            [ParentEvent::class => 'first', ...$subscriptions],
+            sprintf('Event type "%s" must be an existing class or interface.', $eventClass),
+        );
+    }
+
+    /**
+     * Adds a subscriber declaring $subscriptions and checks that it is rejected
+     * without registering any method, including those declared before the invalid entry.
+     *
+     * @param array<mixed> $subscriptions
+     */
+    private static function assertSubscriberRejected(array $subscriptions, string $message): void
+    {
+        RecordingSubscriber::$subscriptions = $subscriptions;
+        $provider = new ListenerProvider();
+
+        try {
+            $provider->addSubscriber(new RecordingSubscriber());
+            self::fail('The subscriber must be rejected.');
+        } catch (InvalidConfigurationException $exception) {
+            self::assertStringContainsString($message, $exception->getMessage());
+        }
+
+        self::assertFalse($provider->hasListenersFor(ParentEvent::class));
+        self::assertFalse($provider->hasListenersFor(TestEvent::class));
+    }
+
+    /** @return list<\Closure> distinct listeners that compare by identity */
+    private static function listeners(int $count): array
+    {
+        return array_map(static fn (int $id): \Closure => static fn (): int => $id, range(1, $count));
     }
 }
