@@ -2,209 +2,261 @@
 
 declare(strict_types=1);
 
-namespace Tests;
+namespace Solo\EventDispatcher\Tests;
 
-function failing_listener(Fixture\TestEvent $e): void
-{
-    throw new \RuntimeException('string fail');
-}
-
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use Psr\Log\LoggerInterface;
-use Solo\EventDispatcher\{EventDispatcher, ListenerProvider};
-use Tests\Fixture\{TestEvent, TestSubscriber, StoppableTestEvent};
+use Psr\EventDispatcher\ListenerProviderInterface;
+use Psr\Log\AbstractLogger;
+use Psr\Log\LogLevel;
+use Solo\EventDispatcher\EventDispatcher;
+use Solo\EventDispatcher\ListenerProvider;
+use Solo\EventDispatcher\Tests\Fixtures\FailingListener;
+use Solo\EventDispatcher\Tests\Fixtures\SpyLogger;
+use Solo\EventDispatcher\Tests\Fixtures\StoppableEvent;
+use Solo\EventDispatcher\Tests\Fixtures\TestEvent;
 
 final class EventDispatcherTest extends TestCase
 {
-    public function testDispatchInvokesSubscriberMethod(): void
+    public function testReturnsTheSameEventWhenNothingListens(): void
     {
-        $log = [];
-        $provider = new ListenerProvider();
-        $provider->addSubscriber(new TestSubscriber(function (string $name) use (&$log): void {
-            $log[] = $name;
-        }));
+        $event = new TestEvent();
 
-        $dispatcher = new EventDispatcher($provider);
-        $dispatcher->dispatch(new TestEvent('hello'));
-
-        self::assertSame(['hello'], $log);
+        self::assertSame($event, (new EventDispatcher(new ListenerProvider()))->dispatch($event));
     }
 
-    public function testPropagationStopsWhenStoppableEvent(): void
+    public function testCallsEachListenerWithTheEventInProviderOrder(): void
     {
-        $order = [];
-
+        $event = new TestEvent();
+        $calls = [];
         $provider = new ListenerProvider();
-        $provider->addListener(StoppableTestEvent::class, function (StoppableTestEvent $e) use (&$order): void {
-            $order[] = 1;
-            $e->stopPropagation();
+        $provider->addListener(TestEvent::class, static function (TestEvent $received) use ($event, &$calls): void {
+            self::assertSame($event, $received);
+            $calls[] = 'low';
+        }, -10);
+        $provider->addListener(TestEvent::class, static function () use (&$calls): string {
+            $calls[] = 'high';
+
+            return 'return values are ignored';
         }, 10);
-        $provider->addListener(StoppableTestEvent::class, function (StoppableTestEvent $e) use (&$order): void {
-            $order[] = 2;
-        }, 0);
 
-        $dispatcher = new EventDispatcher($provider);
-        $dispatcher->dispatch(new StoppableTestEvent());
-
-        self::assertSame([1], $order);
+        self::assertSame($event, (new EventDispatcher($provider))->dispatch($event));
+        self::assertSame(['high', 'low'], $calls);
     }
 
-    public function testPreStoppedEventSkipsAllListeners(): void
+    public function testStopsAfterTheListenerThatStopsPropagation(): void
     {
-        $called = false;
-
+        $calls = [];
         $provider = new ListenerProvider();
-        $provider->addListener(StoppableTestEvent::class, function () use (&$called): void {
-            $called = true;
+        $provider->addListener(StoppableEvent::class, static function (StoppableEvent $event) use (&$calls): void {
+            $calls[] = 'stopping';
+            $event->stopPropagation();
+        }, 10);
+        $provider->addListener(StoppableEvent::class, static function () use (&$calls): void {
+            $calls[] = 'skipped';
         });
 
-        $event = new StoppableTestEvent();
+        $event = (new EventDispatcher($provider))->dispatch(new StoppableEvent());
+
+        self::assertTrue($event->isPropagationStopped());
+        self::assertSame(['stopping'], $calls);
+    }
+
+    public function testSkipsTheProviderForAnAlreadyStoppedEvent(): void
+    {
+        $provider = $this->createMock(ListenerProviderInterface::class);
+        $provider->expects(self::never())->method('getListenersForEvent');
+        $event = new StoppableEvent();
         $event->stopPropagation();
 
-        $dispatcher = new EventDispatcher($provider);
-        $dispatcher->dispatch($event);
-
-        self::assertFalse($called);
+        self::assertSame($event, (new EventDispatcher($provider))->dispatch($event));
     }
 
-    public function testDispatchReturnsEvent(): void
+    public function testDoesNotAdvanceALazyProviderAfterPropagationStops(): void
     {
-        $provider = new ListenerProvider();
-        $dispatcher = new EventDispatcher($provider);
-
-        $event = new TestEvent('test');
-        $result = $dispatcher->dispatch($event);
-
-        self::assertSame($event, $result);
-    }
-
-    public function testListenerExceptionBubblesUpWithoutLogger(): void
-    {
-        $provider = new ListenerProvider();
-        $provider->addListener(TestEvent::class, function (): void {
-            throw new \RuntimeException('boom');
-        });
-
-        $dispatcher = new EventDispatcher($provider);
-
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('boom');
-        $dispatcher->dispatch(new TestEvent('x'));
-    }
-
-    public function testListenerExceptionWithLoggerContinuesExecution(): void
-    {
-        $called = false;
-        $logger = $this->createMock(LoggerInterface::class);
-        $logger->expects(self::once())->method('error');
-
-        $provider = new ListenerProvider();
-        $provider->addListener(TestEvent::class, function (): void {
-            throw new \RuntimeException('boom');
-        }, 10);
-        $provider->addListener(TestEvent::class, function () use (&$called): void {
-            $called = true;
-        }, 0);
-
-        $dispatcher = new EventDispatcher($provider, $logger);
-        $event = $dispatcher->dispatch(new TestEvent('x'));
-
-        self::assertTrue($called);
-        self::assertInstanceOf(TestEvent::class, $event);
-    }
-
-    public function testListenerExceptionIsLoggedWithLogger(): void
-    {
-        $logger = $this->createMock(LoggerInterface::class);
-        $logger->expects(self::once())
-            ->method('error')
-            ->with(
-                'Event listener failed: {exception} {message}',
-                self::callback(function (array $context): bool {
-                    return $context['exception'] === \RuntimeException::class
-                        && $context['message'] === 'boom'
-                        && $context['event'] === TestEvent::class
-                        && $context['listener'] === 'Closure';
-                })
-            );
-
-        $provider = new ListenerProvider();
-        $provider->addListener(TestEvent::class, function (): void {
-            throw new \RuntimeException('boom');
-        });
-
-        $dispatcher = new EventDispatcher($provider, $logger);
-        $dispatcher->dispatch(new TestEvent('x'));
-    }
-
-    public function testDescribeListenerWithArrayCallable(): void
-    {
-        $handler = new class {
-            public function handle(TestEvent $e): void
+        $provider = new class implements ListenerProviderInterface {
+            /** @return iterable<callable> */
+            public function getListenersForEvent(object $event): iterable
             {
-                throw new \RuntimeException('array fail');
+                yield static fn (StoppableEvent $event) => $event->stopPropagation();
+                throw new \LogicException('The provider must not be asked for a listener that will not run.');
+            }
+        };
+        $event = new StoppableEvent();
+
+        self::assertSame($event, (new EventDispatcher($provider))->dispatch($event));
+        self::assertTrue($event->isPropagationStopped());
+    }
+
+    /** @return iterable<string, array{\Throwable}> */
+    public static function failures(): iterable
+    {
+        yield 'exception' => [new \RuntimeException('Listener failed.')];
+        yield 'error' => [new \Error('Listener failed.')];
+    }
+
+    #[DataProvider('failures')]
+    public function testListenerFailureStopsTheDispatchAndPropagatesUnchanged(\Throwable $failure): void
+    {
+        $provider = new ListenerProvider();
+        $provider->addListener(TestEvent::class, static fn () => throw $failure);
+        $provider->addListener(TestEvent::class, static function (): void {
+            self::fail('No listener may run after a failure.');
+        });
+
+        self::assertSame($failure, self::dispatchFailure(new EventDispatcher($provider)));
+    }
+
+    public function testAListenerThatCannotBeCalledFailsWithItsOwnError(): void
+    {
+        $provider = new class implements ListenerProviderInterface {
+            /** @return iterable<mixed> */
+            public function getListenersForEvent(object $event): iterable
+            {
+                yield 'missing_listener_function';
+            }
+        };
+        $logger = new SpyLogger();
+
+        $failure = self::dispatchFailure(new EventDispatcher($provider, $logger));
+
+        self::assertSame(\Error::class, $failure::class);
+        self::assertStringContainsString('missing_listener_function', $failure->getMessage());
+        self::assertSame('missing_listener_function', $logger->records[0]['context']['listener'] ?? null);
+    }
+
+    public function testLogsAListenerFailureBeforeItPropagates(): void
+    {
+        $logger = new SpyLogger();
+        $provider = new ListenerProvider();
+        $provider->addListener(TestEvent::class, [new FailingListener(), 'handle']);
+
+        $failure = self::dispatchFailure(new EventDispatcher($provider, $logger));
+
+        self::assertCount(1, $logger->records);
+        [$record] = $logger->records;
+        self::assertSame(LogLevel::ERROR, $record['level']);
+        self::assertSame('Event listener failed: {message}', $record['message']);
+        self::assertSame([
+            'exception' => $failure,
+            'message' => 'Listener failed.',
+            'event' => TestEvent::class,
+            'listener' => FailingListener::class . '::handle',
+        ], $record['context']);
+    }
+
+    public function testAFailingLoggerNeitherReplacesNorAltersTheListenerFailure(): void
+    {
+        $failure = new \RuntimeException('Listener failed.');
+        $provider = new ListenerProvider();
+        $provider->addListener(TestEvent::class, static fn () => throw $failure);
+        $logger = new class extends AbstractLogger {
+            /** @param array<mixed> $context */
+            public function log($level, string|\Stringable $message, array $context = []): void
+            {
+                throw new \LogicException('Logger failed.');
             }
         };
 
-        $logger = $this->createMock(LoggerInterface::class);
-        $logger->expects(self::once())
-            ->method('error')
-            ->with(
-                self::anything(),
-                self::callback(function (array $context) use ($handler): bool {
-                    return $context['listener'] === $handler::class . '::handle';
-                })
-            );
-
-        $provider = new ListenerProvider();
-        $provider->addListener(TestEvent::class, [$handler, 'handle']);
-
-        $dispatcher = new EventDispatcher($provider, $logger);
-        $dispatcher->dispatch(new TestEvent('x'));
+        self::assertSame($failure, self::dispatchFailure(new EventDispatcher($provider, $logger)));
+        self::assertNull($failure->getPrevious());
     }
 
-    public function testDescribeListenerWithStringCallable(): void
+    /** @return iterable<string, array{callable, string}> */
+    public static function describedListeners(): iterable
     {
-        $logger = $this->createMock(LoggerInterface::class);
-        $logger->expects(self::once())
-            ->method('error')
-            ->with(
-                self::anything(),
-                self::callback(function (array $context): bool {
-                    return $context['listener'] === 'Tests\failing_listener';
-                })
-            );
+        $listener = new FailingListener();
 
-        $provider = new ListenerProvider();
-        $provider->addListener(TestEvent::class, 'Tests\failing_listener');
-
-        $dispatcher = new EventDispatcher($provider, $logger);
-        $dispatcher->dispatch(new TestEvent('x'));
+        yield 'method' => [[$listener, 'handle'], FailingListener::class . '::handle'];
+        yield 'invokable object' => [$listener, FailingListener::class . '::__invoke'];
+        yield 'static method' => [
+            [FailingListener::class, 'handleStatically'],
+            FailingListener::class . '::handleStatically',
+        ];
+        yield 'static method string' => [
+            FailingListener::class . '::handleStatically',
+            FailingListener::class . '::handleStatically',
+        ];
+        yield 'first-class method' => [$listener->handle(...), FailingListener::class . '::handle'];
+        yield 'function' => ['strlen', 'strlen'];
+        yield 'first-class function' => [strlen(...), 'strlen'];
     }
 
-    public function testDescribeListenerWithInvokableObject(): void
+    #[DataProvider('describedListeners')]
+    public function testLogNamesTheFailedListener(callable $listener, string $description): void
     {
-        $invokable = new class {
-            public function __invoke(TestEvent $e): void
-            {
-                throw new \RuntimeException('invokable fail');
-            }
+        $logger = new SpyLogger();
+        $provider = new ListenerProvider();
+        $provider->addListener(TestEvent::class, $listener);
+
+        self::dispatchFailure(new EventDispatcher($provider, $logger));
+
+        self::assertSame($description, $logger->records[0]['context']['listener'] ?? null);
+    }
+
+    public function testLogNamesAClosureByWhereItIsDefined(): void
+    {
+        $logger = new SpyLogger();
+        $provider = new ListenerProvider();
+        $line = __LINE__ + 1;
+        $provider->addListener(TestEvent::class, static fn () => throw new \RuntimeException('Listener failed.'));
+
+        self::dispatchFailure(new EventDispatcher($provider, $logger));
+
+        self::assertSame(
+            sprintf('Closure at %s:%d', __FILE__, $line),
+            $logger->records[0]['context']['listener'] ?? null,
+        );
+    }
+
+    public function testListenersAddedDuringADispatchRunFromTheNextDispatch(): void
+    {
+        $calls = [];
+        $provider = new ListenerProvider();
+        $late = static function () use (&$calls): void {
+            $calls[] = 'late';
         };
+        $provider->addListener(TestEvent::class, static function () use ($provider, $late, &$calls): void {
+            $calls[] = 'first';
+            $provider->addListener(TestEvent::class, $late);
+        });
+        $dispatcher = new EventDispatcher($provider);
 
-        $logger = $this->createMock(LoggerInterface::class);
-        $logger->expects(self::once())
-            ->method('error')
-            ->with(
-                self::anything(),
-                self::callback(function (array $context) use ($invokable): bool {
-                    return $context['listener'] === $invokable::class . '::__invoke';
-                })
-            );
+        $dispatcher->dispatch(new TestEvent());
+        self::assertSame(['first'], $calls);
 
+        $dispatcher->dispatch(new TestEvent());
+        self::assertSame(['first', 'first', 'late'], $calls);
+    }
+
+    public function testANestedDispatchRunsToCompletionInsideTheOuterOne(): void
+    {
+        $calls = [];
         $provider = new ListenerProvider();
-        $provider->addListener(TestEvent::class, $invokable);
+        $dispatcher = new EventDispatcher($provider);
+        $provider->addListener(TestEvent::class, static function (TestEvent $event) use ($dispatcher, &$calls): void {
+            $calls[] = 'first:' . $event->name;
+            if ($event->name === 'outer') {
+                $dispatcher->dispatch(new TestEvent('inner'));
+            }
+        });
+        $provider->addListener(TestEvent::class, static function (TestEvent $event) use (&$calls): void {
+            $calls[] = 'last:' . $event->name;
+        });
 
-        $dispatcher = new EventDispatcher($provider, $logger);
-        $dispatcher->dispatch(new TestEvent('x'));
+        $dispatcher->dispatch(new TestEvent('outer'));
+
+        self::assertSame(['first:outer', 'first:inner', 'last:inner', 'last:outer'], $calls);
+    }
+
+    private static function dispatchFailure(EventDispatcher $dispatcher): \Throwable
+    {
+        try {
+            $dispatcher->dispatch(new TestEvent());
+        } catch (\Throwable $failure) {
+            return $failure;
+        }
+
+        self::fail('The listener failure must reach the caller.');
     }
 }
