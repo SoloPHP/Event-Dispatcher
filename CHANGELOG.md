@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 — Unreleased
+## 2.0.0 — 2026-11-01
 
 Strict PSR-14: a listener failure stops the dispatch and reaches the caller, whether or not a logger is configured. Registration checks event types and subscriptions when they are added, and the array-configuration factory is gone. See the [upgrade guide](UPGRADE.md).
 
@@ -23,6 +23,7 @@ Strict PSR-14: a listener failure stops the dispatch and reaches the caller, whe
 ### Fixed
 
 - A logger that throws no longer replaces the listener's exception.
+- With a logger, a listener that cannot be called fails with its own error instead of a `TypeError` from the failure record.
 - Class aliases and differently cased class names match the event's class.
 
 ## 1.2.1 — 2026-05-12
